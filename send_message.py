@@ -15,6 +15,7 @@ import os
 import sys
 from datetime import datetime
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 from config import RECIPIENT, MESSAGE, COOKIES_FILE
 
 
@@ -76,7 +77,9 @@ def main():
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
         )
+        stealth = Stealth()
         page = context.new_page()
+        stealth.apply_stealth_sync(page)
 
         # Navigate to TikTok messages
         log("Navigating to TikTok messages...")
