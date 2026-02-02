@@ -1,0 +1,32 @@
+name: TikTok Streak
+
+on:
+  schedule:
+    # Runs daily at 9:00 AM EST (14:00 UTC)
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  send-message:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Send TikTok message
+        env:
+          TIKTOK_COOKIES_B64: ${{ secrets.TIKTOK_COOKIES }}
+          TIKTOK_RECIPIENT: ${{ secrets.TIKTOK_RECIPIENT }}
+          TIKTOK_MESSAGE: ${{ secrets.TIKTOK_MESSAGE }}
+        run: python send_message.py
