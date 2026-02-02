@@ -90,11 +90,26 @@ def main():
             browser.close()
             sys.exit(1)
 
-        save_debug_screenshot(page, "messages-page")
+        # Wait for conversation list to fully load (skeleton placeholders disappear)
+        log("Waiting for conversations to load...")
+        for attempt in range(30):
+            page.wait_for_timeout(2000)
+            body_text = page.locator("body").inner_text()
+            # Once we see real user names (not just nav items), the list has loaded
+            lines = [l.strip() for l in body_text.split("\n") if l.strip()]
+            non_nav = [l for l in lines if l not in (
+                "TikTok", "For You", "Shop", "Explore", "Following", "Friends",
+                "LIVE", "Messages", "Activity", "Upload", "Profile", "More",
+                "Post video", "", "39"
+            )]
+            if len(non_nav) > 3:
+                log(f"Conversations loaded (attempt {attempt + 1})")
+                break
+            log(f"Still loading... (attempt {attempt + 1})")
+        else:
+            log("WARNING: Conversations may not have fully loaded")
 
-        # Log visible text on the page to help debug
-        log("Looking for conversations on the page...")
-        page.wait_for_timeout(3000)
+        save_debug_screenshot(page, "messages-page")
 
         # Find the conversation with the recipient — try multiple strategies
         log(f"Looking for conversation with {RECIPIENT}...")
@@ -118,16 +133,6 @@ def main():
                 log("Found conversation via partial text match")
             except Exception:
                 log("Partial text match also failed, trying broader search...")
-
-        # Strategy 3: Search within conversation list elements
-        if not conversation:
-            loc = page.locator(f'[data-e2e="message-list"] >> text="{RECIPIENT}"').first
-            try:
-                loc.wait_for(state="visible", timeout=5000)
-                conversation = loc
-                log("Found conversation in message list")
-            except Exception:
-                pass
 
         if not conversation:
             save_debug_screenshot(page, "conversation-not-found")
