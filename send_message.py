@@ -41,6 +41,19 @@ def load_cookies():
     sys.exit(1)
 
 
+def save_debug_screenshot(page, name):
+    """Save a screenshot for debugging CI failures."""
+    try:
+        path = f"/tmp/{name}.png"
+        page.screenshot(path=path)
+        log(f"Debug screenshot saved to {path}")
+        # Print page URL and title for context
+        log(f"Current URL: {page.url}")
+        log(f"Page title: {page.title()}")
+    except Exception as e:
+        log(f"Could not save screenshot: {e}")
+
+
 def main():
     if not RECIPIENT:
         log("ERROR: TIKTOK_RECIPIENT is not set.")
@@ -68,20 +81,71 @@ def main():
         # Navigate to TikTok messages
         log("Navigating to TikTok messages...")
         page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(5000)
 
         # Check if we're redirected to login (session expired)
         if "/login" in page.url:
+            save_debug_screenshot(page, "login-redirect")
             log("ERROR: Session expired. Re-run login.py and update TIKTOK_COOKIES secret.")
             browser.close()
             sys.exit(1)
 
-        # Find the conversation with the recipient
+        save_debug_screenshot(page, "messages-page")
+
+        # Log visible text on the page to help debug
+        log("Looking for conversations on the page...")
+        page.wait_for_timeout(3000)
+
+        # Find the conversation with the recipient — try multiple strategies
         log(f"Looking for conversation with {RECIPIENT}...")
-        conversation = page.locator(f'text="{RECIPIENT}"').first
-        conversation.wait_for(state="visible", timeout=10000)
+        conversation = None
+
+        # Strategy 1: Exact text match
+        loc = page.locator(f'text="{RECIPIENT}"').first
+        try:
+            loc.wait_for(state="visible", timeout=10000)
+            conversation = loc
+            log("Found conversation via exact text match")
+        except Exception:
+            log("Exact text match failed, trying partial match...")
+
+        # Strategy 2: Case-insensitive partial match
+        if not conversation:
+            loc = page.get_by_text(RECIPIENT, exact=False).first
+            try:
+                loc.wait_for(state="visible", timeout=10000)
+                conversation = loc
+                log("Found conversation via partial text match")
+            except Exception:
+                log("Partial text match also failed, trying broader search...")
+
+        # Strategy 3: Search within conversation list elements
+        if not conversation:
+            loc = page.locator(f'[data-e2e="message-list"] >> text="{RECIPIENT}"').first
+            try:
+                loc.wait_for(state="visible", timeout=5000)
+                conversation = loc
+                log("Found conversation in message list")
+            except Exception:
+                pass
+
+        if not conversation:
+            save_debug_screenshot(page, "conversation-not-found")
+            # Dump visible text to help debug
+            try:
+                body_text = page.locator("body").inner_text()
+                log(f"Page text preview (first 1000 chars):\n{body_text[:1000]}")
+            except Exception:
+                pass
+            log(f"ERROR: Could not find conversation with '{RECIPIENT}'.")
+            log("  Make sure TIKTOK_RECIPIENT matches the exact display name in your messages.")
+            browser.close()
+            sys.exit(1)
+
         conversation.click()
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
+
+        save_debug_screenshot(page, "conversation-opened")
 
         # Find the message input and type the message
         log("Typing message...")
@@ -109,6 +173,8 @@ def main():
             message_input.press("Enter")
 
         page.wait_for_timeout(2000)
+
+        save_debug_screenshot(page, "message-sent")
 
         # Save updated cookies locally (in case session was refreshed)
         if not os.environ.get("TIKTOK_COOKIES_B64"):

@@ -30,3 +30,12 @@ jobs:
           TIKTOK_RECIPIENT: ${{ secrets.TIKTOK_RECIPIENT }}
           TIKTOK_MESSAGE: ${{ secrets.TIKTOK_MESSAGE }}
         run: python send_message.py
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: /tmp/*.png
+          if-no-files-found: ignore
+          retention-days: 7

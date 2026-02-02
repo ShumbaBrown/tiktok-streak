@@ -44,27 +44,33 @@ def main():
     print()
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            PROFILE_DIR,
-            headless=False,
-            viewport={"width": 1280, "height": 800},
-        )
-
-        page = context.pages[0] if context.pages else context.new_page()
+        browser = p.chromium.launch(headless=False)
+        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = context.new_page()
         page.goto("https://www.tiktok.com/login")
 
-        # Wait for the user to close the browser
-        try:
-            page.wait_for_event("close", timeout=0)
-        except Exception:
-            pass
+        print("Waiting for login to complete...")
+        print("(After scanning the QR code, wait for the page to redirect)")
+        print()
+
+        # Wait until URL changes away from /login (means login succeeded)
+        page.wait_for_url("**/!(login)*", timeout=300000)
+        print("Login detected! Navigating to messages to verify...")
+
+        page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
+        page.wait_for_timeout(3000)
+
+        if "/login" in page.url:
+            print("WARNING: Still on login page. Session may not have saved correctly.")
+        else:
+            print("Messages page loaded successfully!")
 
         # Save session cookies and storage state
         storage = context.storage_state()
         with open(COOKIES_FILE, "w") as f:
             json.dump(storage, f, indent=2)
 
-        context.close()
+        browser.close()
 
     # Base64 encode for GitHub Actions
     with open(COOKIES_FILE) as f:
