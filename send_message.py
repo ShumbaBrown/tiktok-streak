@@ -7,6 +7,10 @@ Usage:
     TIKTOK_COOKIES_B64=... python send_message.py  # Uses base64-encoded cookies from env
 
 All config is read from environment variables (see README).
+
+TIKTOK_RECIPIENT can be either:
+  - A username (starting with @, e.g., "@johndoe") — will search for user and open DM
+  - A display name (e.g., "John Doe") — will look for this name in existing conversations
 """
 
 import base64
@@ -48,23 +52,117 @@ def save_debug_screenshot(page, name):
         path = f"/tmp/{name}.png"
         page.screenshot(path=path)
         log(f"Debug screenshot saved to {path}")
-        # Print page URL and title for context
         log(f"Current URL: {page.url}")
         log(f"Page title: {page.title()}")
     except Exception as e:
         log(f"Could not save screenshot: {e}")
 
 
+def find_conversation_by_username(page, username):
+    """Navigate to user's profile and open DM from there."""
+    username_clean = username.lstrip("@")
+    log(f"Looking up user profile: @{username_clean}")
+
+    # Go to user's profile
+    profile_url = f"https://www.tiktok.com/@{username_clean}"
+    page.goto(profile_url, wait_until="networkidle")
+    page.wait_for_timeout(3000)
+
+    save_debug_screenshot(page, "user-profile")
+
+    # Look for the message/DM button on their profile
+    message_button = page.locator(
+        '[data-e2e="message-button"], '
+        'button:has-text("Message"), '
+        '[aria-label*="Message"], '
+        '[aria-label*="message"]'
+    ).first
+
+    try:
+        message_button.wait_for(state="visible", timeout=10000)
+        log("Found message button on profile")
+        message_button.click()
+        page.wait_for_timeout(3000)
+        return True
+    except Exception:
+        log("Could not find message button on profile")
+        return False
+
+
+def find_conversation_by_display_name(page, display_name):
+    """Search through conversation list for display name."""
+    log(f"Looking for conversation with display name: {display_name}")
+
+    # Navigate to messages
+    page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
+    page.wait_for_timeout(5000)
+
+    # Check if logged in
+    if "/login" in page.url:
+        return False, "login_required"
+
+    # Wait for conversation list to load
+    log("Waiting for conversations to load...")
+    for attempt in range(15):
+        page.wait_for_timeout(2000)
+        body_text = page.locator("body").inner_text()
+        lines = [l.strip() for l in body_text.split("\n") if l.strip()]
+        non_nav = [l for l in lines if l not in (
+            "TikTok", "For You", "Shop", "Explore", "Following", "Friends",
+            "LIVE", "Messages", "Activity", "Upload", "Profile", "More",
+            "Post video", ""
+        ) and not l.isdigit()]
+        if len(non_nav) > 3:
+            log(f"Conversations loaded (attempt {attempt + 1})")
+            break
+        log(f"Still loading... (attempt {attempt + 1})")
+
+    save_debug_screenshot(page, "messages-page")
+
+    # Try to find and click the conversation
+    for scroll_attempt in range(10):
+        # Try exact match
+        loc = page.locator(f'text="{display_name}"').first
+        try:
+            loc.wait_for(state="visible", timeout=3000)
+            log("Found conversation via exact text match")
+            loc.click()
+            page.wait_for_timeout(3000)
+            return True, None
+        except Exception:
+            pass
+
+        # Try partial match
+        loc = page.get_by_text(display_name, exact=False).first
+        try:
+            loc.wait_for(state="visible", timeout=3000)
+            log("Found conversation via partial text match")
+            loc.click()
+            page.wait_for_timeout(3000)
+            return True, None
+        except Exception:
+            pass
+
+        # Scroll and try again
+        if scroll_attempt < 9:
+            log(f"Not found yet, scrolling... (attempt {scroll_attempt + 1})")
+            page.mouse.wheel(0, 500)
+            page.wait_for_timeout(1500)
+
+    return False, "not_found"
+
+
 def main():
     if not RECIPIENT:
         log("ERROR: TIKTOK_RECIPIENT is not set.")
         log("  Set it as a GitHub Actions secret or environment variable.")
-        log("  See README for instructions.")
+        log("  Use @username (e.g., @johndoe) or display name (e.g., John Doe)")
         sys.exit(1)
 
     log(f"Sending message to {RECIPIENT}: {MESSAGE}")
 
     storage_state = load_cookies()
+    is_username = RECIPIENT.startswith("@")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -81,92 +179,39 @@ def main():
         page = context.new_page()
         stealth.apply_stealth_sync(page)
 
-        # Navigate to TikTok messages
-        log("Navigating to TikTok messages...")
-        page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
-        page.wait_for_timeout(5000)
-
-        # Check if we're redirected to login (session expired)
-        if "/login" in page.url:
-            save_debug_screenshot(page, "login-redirect")
-            log("ERROR: Session expired. Re-run login.py and update TIKTOK_COOKIES secret.")
-            browser.close()
-            sys.exit(1)
-
-        # Wait for conversation list to fully load (skeleton placeholders disappear)
-        log("Waiting for conversations to load...")
-        for attempt in range(30):
-            page.wait_for_timeout(2000)
-            body_text = page.locator("body").inner_text()
-            # Once we see real user names (not just nav items), the list has loaded
-            lines = [l.strip() for l in body_text.split("\n") if l.strip()]
-            non_nav = [l for l in lines if l not in (
-                "TikTok", "For You", "Shop", "Explore", "Following", "Friends",
-                "LIVE", "Messages", "Activity", "Upload", "Profile", "More",
-                "Post video", "", "39"
-            )]
-            if len(non_nav) > 3:
-                log(f"Conversations loaded (attempt {attempt + 1})")
-                break
-            log(f"Still loading... (attempt {attempt + 1})")
+        if is_username:
+            # Use username approach: go to profile -> click message
+            success = find_conversation_by_username(page, RECIPIENT)
+            if not success:
+                save_debug_screenshot(page, "username-lookup-failed")
+                log(f"ERROR: Could not open DM with {RECIPIENT}")
+                log("  Make sure the username is correct and you can message this user.")
+                browser.close()
+                sys.exit(1)
         else:
-            log("WARNING: Conversations may not have fully loaded")
+            # Use display name approach: search conversation list
+            # First check if we're logged in by going to messages
+            page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
+            page.wait_for_timeout(3000)
 
-        save_debug_screenshot(page, "messages-page")
+            if "/login" in page.url:
+                save_debug_screenshot(page, "login-redirect")
+                log("ERROR: Session expired. Re-run login.py and update TIKTOK_COOKIES secret.")
+                browser.close()
+                sys.exit(1)
 
-        # Find the conversation with the recipient — try multiple strategies
-        log(f"Looking for conversation with {RECIPIENT}...")
-        conversation = None
-
-        # Try to find the conversation, scrolling if needed
-        conversation_list = page.locator('[data-e2e="message-list"], [class*="ChatList"], [class*="conversation"]').first
-
-        for scroll_attempt in range(10):
-            # Strategy 1: Exact text match
-            loc = page.locator(f'text="{RECIPIENT}"').first
-            try:
-                loc.wait_for(state="visible", timeout=3000)
-                conversation = loc
-                log("Found conversation via exact text match")
-                break
-            except Exception:
-                pass
-
-            # Strategy 2: Case-insensitive partial match
-            loc = page.get_by_text(RECIPIENT, exact=False).first
-            try:
-                loc.wait_for(state="visible", timeout=3000)
-                conversation = loc
-                log("Found conversation via partial text match")
-                break
-            except Exception:
-                pass
-
-            # Scroll down in the conversation list to load more
-            if scroll_attempt < 9:
-                log(f"Not found yet, scrolling... (attempt {scroll_attempt + 1})")
+            success, error = find_conversation_by_display_name(page, RECIPIENT)
+            if not success:
+                save_debug_screenshot(page, "conversation-not-found")
                 try:
-                    conversation_list.evaluate("el => el.scrollTop += 500")
+                    body_text = page.locator("body").inner_text()
+                    log(f"Page text preview (first 1000 chars):\n{body_text[:1000]}")
                 except Exception:
-                    # Fallback: scroll the whole page
-                    page.mouse.wheel(0, 500)
-                page.wait_for_timeout(1500)
-
-        if not conversation:
-            save_debug_screenshot(page, "conversation-not-found")
-            # Dump visible text to help debug
-            try:
-                body_text = page.locator("body").inner_text()
-                log(f"Page text preview (first 1000 chars):\n{body_text[:1000]}")
-            except Exception:
-                pass
-            log(f"ERROR: Could not find conversation with '{RECIPIENT}'.")
-            log("  Make sure TIKTOK_RECIPIENT matches the exact display name in your messages.")
-            browser.close()
-            sys.exit(1)
-
-        conversation.click()
-        page.wait_for_timeout(3000)
+                    pass
+                log(f"ERROR: Could not find conversation with '{RECIPIENT}'.")
+                log("  Try using @username instead of display name.")
+                browser.close()
+                sys.exit(1)
 
         save_debug_screenshot(page, "conversation-opened")
 
@@ -182,7 +227,7 @@ def main():
         message_input.fill(MESSAGE)
         page.wait_for_timeout(500)
 
-        # Send the message (press Enter or click send button)
+        # Send the message
         log("Sending message...")
         send_button = page.locator(
             '[data-e2e="message-send"], '
