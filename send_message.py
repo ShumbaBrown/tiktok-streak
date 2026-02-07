@@ -8,9 +8,9 @@ Usage:
 
 All config is read from environment variables (see README).
 
-TIKTOK_RECIPIENT can be either:
-  - A username (starting with @, e.g., "@johndoe") — will search for user and open DM
-  - A display name (e.g., "John Doe") — will look for this name in existing conversations
+TIKTOK_RECIPIENT format: "DisplayName" or "DisplayName|@username"
+  - First tries to find DisplayName in conversation list
+  - If not found and @username is provided, uses search to find them
 """
 
 import base64
@@ -58,50 +58,8 @@ def save_debug_screenshot(page, name):
         log(f"Could not save screenshot: {e}")
 
 
-def find_conversation_by_username(page, username):
-    """Navigate to user's profile and open DM from there."""
-    username_clean = username.lstrip("@")
-    log(f"Looking up user profile: @{username_clean}")
-
-    # Go to user's profile
-    profile_url = f"https://www.tiktok.com/@{username_clean}"
-    page.goto(profile_url, wait_until="networkidle")
-    page.wait_for_timeout(3000)
-
-    save_debug_screenshot(page, "user-profile")
-
-    # Look for the message/DM button on their profile
-    message_button = page.locator(
-        '[data-e2e="message-button"], '
-        'button:has-text("Message"), '
-        '[aria-label*="Message"], '
-        '[aria-label*="message"]'
-    ).first
-
-    try:
-        message_button.wait_for(state="visible", timeout=10000)
-        log("Found message button on profile")
-        message_button.click()
-        page.wait_for_timeout(3000)
-        return True
-    except Exception:
-        log("Could not find message button on profile")
-        return False
-
-
-def find_conversation_by_display_name(page, display_name):
-    """Search through conversation list for display name."""
-    log(f"Looking for conversation with display name: {display_name}")
-
-    # Navigate to messages
-    page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
-    page.wait_for_timeout(5000)
-
-    # Check if logged in
-    if "/login" in page.url:
-        return False, "login_required"
-
-    # Wait for conversation list to load
+def wait_for_conversations_to_load(page):
+    """Wait for the conversation list to finish loading."""
     log("Waiting for conversations to load...")
     for attempt in range(15):
         page.wait_for_timeout(2000)
@@ -114,13 +72,17 @@ def find_conversation_by_display_name(page, display_name):
         ) and not l.isdigit()]
         if len(non_nav) > 3:
             log(f"Conversations loaded (attempt {attempt + 1})")
-            break
+            return True
         log(f"Still loading... (attempt {attempt + 1})")
+    log("WARNING: Conversations may not have fully loaded")
+    return False
 
-    save_debug_screenshot(page, "messages-page")
 
-    # Try to find and click the conversation
-    for scroll_attempt in range(10):
+def find_in_conversation_list(page, display_name):
+    """Try to find and click a conversation by display name (with scrolling)."""
+    log(f"Looking for '{display_name}' in conversation list...")
+
+    for scroll_attempt in range(5):
         # Try exact match
         loc = page.locator(f'text="{display_name}"').first
         try:
@@ -128,7 +90,7 @@ def find_conversation_by_display_name(page, display_name):
             log("Found conversation via exact text match")
             loc.click()
             page.wait_for_timeout(3000)
-            return True, None
+            return True
         except Exception:
             pass
 
@@ -139,30 +101,98 @@ def find_conversation_by_display_name(page, display_name):
             log("Found conversation via partial text match")
             loc.click()
             page.wait_for_timeout(3000)
-            return True, None
+            return True
         except Exception:
             pass
 
         # Scroll and try again
-        if scroll_attempt < 9:
-            log(f"Not found yet, scrolling... (attempt {scroll_attempt + 1})")
+        if scroll_attempt < 4:
+            log(f"Not found, scrolling... (attempt {scroll_attempt + 1})")
             page.mouse.wheel(0, 500)
             page.wait_for_timeout(1500)
 
-    return False, "not_found"
+    return False
+
+
+def search_for_user(page, username):
+    """Use the search feature in messages to find a user by username."""
+    username_clean = username.lstrip("@")
+    log(f"Searching for @{username_clean} using search...")
+
+    # Click the search icon in the left sidebar
+    search_button = page.locator(
+        '[data-e2e="search-icon"], '
+        'svg[data-icon="search"], '
+        'button[aria-label*="Search"], '
+        '[class*="search"] svg, '
+        'a[href*="search"]'
+    ).first
+
+    try:
+        search_button.wait_for(state="visible", timeout=5000)
+        search_button.click()
+        page.wait_for_timeout(2000)
+    except Exception:
+        log("Could not find search button, trying search input directly...")
+
+    # Look for search input
+    search_input = page.locator(
+        '[data-e2e="search-input"], '
+        'input[placeholder*="Search"], '
+        'input[type="search"], '
+        'input[aria-label*="Search"]'
+    ).first
+
+    try:
+        search_input.wait_for(state="visible", timeout=5000)
+        search_input.click()
+        search_input.fill(username_clean)
+        page.wait_for_timeout(2000)
+
+        # Press enter or wait for results
+        search_input.press("Enter")
+        page.wait_for_timeout(3000)
+
+        save_debug_screenshot(page, "search-results")
+
+        # Look for the user in search results and click
+        result = page.get_by_text(username_clean, exact=False).first
+        result.wait_for(state="visible", timeout=5000)
+        result.click()
+        page.wait_for_timeout(3000)
+
+        return True
+    except Exception as e:
+        log(f"Search failed: {e}")
+        return False
 
 
 def main():
     if not RECIPIENT:
         log("ERROR: TIKTOK_RECIPIENT is not set.")
         log("  Set it as a GitHub Actions secret or environment variable.")
-        log("  Use @username (e.g., @johndoe) or display name (e.g., John Doe)")
+        log("  Format: 'DisplayName' or 'DisplayName|@username'")
         sys.exit(1)
 
-    log(f"Sending message to {RECIPIENT}: {MESSAGE}")
+    # Parse recipient - can be "DisplayName" or "DisplayName|@username"
+    if "|" in RECIPIENT:
+        display_name, username = RECIPIENT.split("|", 1)
+        display_name = display_name.strip()
+        username = username.strip()
+    elif RECIPIENT.startswith("@"):
+        display_name = None
+        username = RECIPIENT
+    else:
+        display_name = RECIPIENT
+        username = None
+
+    log(f"Sending message: {MESSAGE}")
+    if display_name:
+        log(f"  Display name: {display_name}")
+    if username:
+        log(f"  Username: {username}")
 
     storage_state = load_cookies()
-    is_username = RECIPIENT.startswith("@")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -179,39 +209,42 @@ def main():
         page = context.new_page()
         stealth.apply_stealth_sync(page)
 
-        if is_username:
-            # Use username approach: go to profile -> click message
-            success = find_conversation_by_username(page, RECIPIENT)
-            if not success:
-                save_debug_screenshot(page, "username-lookup-failed")
-                log(f"ERROR: Could not open DM with {RECIPIENT}")
-                log("  Make sure the username is correct and you can message this user.")
-                browser.close()
-                sys.exit(1)
-        else:
-            # Use display name approach: search conversation list
-            # First check if we're logged in by going to messages
-            page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
-            page.wait_for_timeout(3000)
+        # Navigate to messages
+        log("Navigating to TikTok messages...")
+        page.goto("https://www.tiktok.com/messages", wait_until="networkidle")
+        page.wait_for_timeout(3000)
 
-            if "/login" in page.url:
-                save_debug_screenshot(page, "login-redirect")
-                log("ERROR: Session expired. Re-run login.py and update TIKTOK_COOKIES secret.")
-                browser.close()
-                sys.exit(1)
+        # Check if logged in
+        if "/login" in page.url:
+            save_debug_screenshot(page, "login-redirect")
+            log("ERROR: Session expired. Re-run login.py and update TIKTOK_COOKIES secret.")
+            browser.close()
+            sys.exit(1)
 
-            success, error = find_conversation_by_display_name(page, RECIPIENT)
-            if not success:
-                save_debug_screenshot(page, "conversation-not-found")
-                try:
-                    body_text = page.locator("body").inner_text()
-                    log(f"Page text preview (first 1000 chars):\n{body_text[:1000]}")
-                except Exception:
-                    pass
-                log(f"ERROR: Could not find conversation with '{RECIPIENT}'.")
-                log("  Try using @username instead of display name.")
-                browser.close()
-                sys.exit(1)
+        wait_for_conversations_to_load(page)
+        save_debug_screenshot(page, "messages-page")
+
+        # Strategy 1: Try to find by display name in conversation list
+        found = False
+        if display_name:
+            found = find_in_conversation_list(page, display_name)
+
+        # Strategy 2: If not found, try search with username
+        if not found and username:
+            log("Display name not found in list, trying search...")
+            found = search_for_user(page, username)
+
+        if not found:
+            save_debug_screenshot(page, "conversation-not-found")
+            try:
+                body_text = page.locator("body").inner_text()
+                log(f"Page text preview (first 1000 chars):\n{body_text[:1000]}")
+            except Exception:
+                pass
+            log(f"ERROR: Could not find conversation.")
+            log("  Make sure the display name or username is correct.")
+            browser.close()
+            sys.exit(1)
 
         save_debug_screenshot(page, "conversation-opened")
 
