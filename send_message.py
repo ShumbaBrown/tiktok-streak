@@ -82,27 +82,41 @@ def find_in_conversation_list(page, display_name):
     """Try to find and click a conversation by display name (with scrolling)."""
     log(f"Looking for '{display_name}' in conversation list...")
 
-    # Get all conversation items and look for the display name
     for scroll_attempt in range(5):
-        # Try to find by looking at all visible text that matches
-        conversations = page.locator('div').filter(has_text=display_name)
-        count = conversations.count()
-        log(f"Found {count} elements containing '{display_name}'")
+        # Strategy 1: Find text that exactly matches or starts with the display name
+        # This should find the name element in the conversation item
+        try:
+            # Look for a span/p/div that contains just the name (not a huge container)
+            name_element = page.locator(f'span:text-is("{display_name}"), p:text-is("{display_name}")').first
+            name_element.wait_for(state="visible", timeout=3000)
+            log(f"Found exact name element, clicking...")
+            name_element.click()
+            page.wait_for_timeout(3000)
+            return True
+        except Exception:
+            pass
 
-        if count > 0:
-            # Click the first clickable one that looks like a conversation
-            for i in range(min(count, 5)):
-                try:
-                    item = conversations.nth(i)
-                    # Check if this looks like a conversation item (has the name prominently)
-                    text = item.inner_text()
-                    if display_name in text and len(text) < 500:  # Avoid clicking huge containers
-                        log(f"Clicking conversation item {i}: {text[:50]}...")
-                        item.click()
-                        page.wait_for_timeout(3000)
-                        return True
-                except Exception:
-                    continue
+        # Strategy 2: Look for links or clickable items containing the name
+        try:
+            link = page.locator(f'a:has-text("{display_name}"), [role="button"]:has-text("{display_name}")').first
+            link.wait_for(state="visible", timeout=2000)
+            log(f"Found link/button with name, clicking...")
+            link.click()
+            page.wait_for_timeout(3000)
+            return True
+        except Exception:
+            pass
+
+        # Strategy 3: Get by text with exact match
+        try:
+            elem = page.get_by_text(display_name, exact=True).first
+            elem.wait_for(state="visible", timeout=2000)
+            log(f"Found via get_by_text exact, clicking...")
+            elem.click()
+            page.wait_for_timeout(3000)
+            return True
+        except Exception:
+            pass
 
         # Scroll and try again
         if scroll_attempt < 4:
