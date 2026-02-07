@@ -118,24 +118,39 @@ def main():
         log(f"Looking for conversation with {RECIPIENT}...")
         conversation = None
 
-        # Strategy 1: Exact text match
-        loc = page.locator(f'text="{RECIPIENT}"').first
-        try:
-            loc.wait_for(state="visible", timeout=10000)
-            conversation = loc
-            log("Found conversation via exact text match")
-        except Exception:
-            log("Exact text match failed, trying partial match...")
+        # Try to find the conversation, scrolling if needed
+        conversation_list = page.locator('[data-e2e="message-list"], [class*="ChatList"], [class*="conversation"]').first
 
-        # Strategy 2: Case-insensitive partial match
-        if not conversation:
+        for scroll_attempt in range(10):
+            # Strategy 1: Exact text match
+            loc = page.locator(f'text="{RECIPIENT}"').first
+            try:
+                loc.wait_for(state="visible", timeout=3000)
+                conversation = loc
+                log("Found conversation via exact text match")
+                break
+            except Exception:
+                pass
+
+            # Strategy 2: Case-insensitive partial match
             loc = page.get_by_text(RECIPIENT, exact=False).first
             try:
-                loc.wait_for(state="visible", timeout=10000)
+                loc.wait_for(state="visible", timeout=3000)
                 conversation = loc
                 log("Found conversation via partial text match")
+                break
             except Exception:
-                log("Partial text match also failed, trying broader search...")
+                pass
+
+            # Scroll down in the conversation list to load more
+            if scroll_attempt < 9:
+                log(f"Not found yet, scrolling... (attempt {scroll_attempt + 1})")
+                try:
+                    conversation_list.evaluate("el => el.scrollTop += 500")
+                except Exception:
+                    # Fallback: scroll the whole page
+                    page.mouse.wheel(0, 500)
+                page.wait_for_timeout(1500)
 
         if not conversation:
             save_debug_screenshot(page, "conversation-not-found")
