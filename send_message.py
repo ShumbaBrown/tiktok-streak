@@ -82,28 +82,27 @@ def find_in_conversation_list(page, display_name):
     """Try to find and click a conversation by display name (with scrolling)."""
     log(f"Looking for '{display_name}' in conversation list...")
 
+    # Get all conversation items and look for the display name
     for scroll_attempt in range(5):
-        # Try exact match
-        loc = page.locator(f'text="{display_name}"').first
-        try:
-            loc.wait_for(state="visible", timeout=3000)
-            log("Found conversation via exact text match")
-            loc.click()
-            page.wait_for_timeout(3000)
-            return True
-        except Exception:
-            pass
+        # Try to find by looking at all visible text that matches
+        conversations = page.locator('div').filter(has_text=display_name)
+        count = conversations.count()
+        log(f"Found {count} elements containing '{display_name}'")
 
-        # Try partial match
-        loc = page.get_by_text(display_name, exact=False).first
-        try:
-            loc.wait_for(state="visible", timeout=3000)
-            log("Found conversation via partial text match")
-            loc.click()
-            page.wait_for_timeout(3000)
-            return True
-        except Exception:
-            pass
+        if count > 0:
+            # Click the first clickable one that looks like a conversation
+            for i in range(min(count, 5)):
+                try:
+                    item = conversations.nth(i)
+                    # Check if this looks like a conversation item (has the name prominently)
+                    text = item.inner_text()
+                    if display_name in text and len(text) < 500:  # Avoid clicking huge containers
+                        log(f"Clicking conversation item {i}: {text[:50]}...")
+                        item.click()
+                        page.wait_for_timeout(3000)
+                        return True
+                except Exception:
+                    continue
 
         # Scroll and try again
         if scroll_attempt < 4:
