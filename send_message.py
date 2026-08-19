@@ -28,6 +28,48 @@ def log(msg):
     print(f"[{timestamp}] {msg}")
 
 
+FAILURE_REASON_FILE = "/tmp/streak-failure-reason.txt"
+COOKIE_WARNING_FILE = "/tmp/streak-cookie-warning.txt"
+
+
+def fail(reason, hints=()):
+    """Log an error, record the reason for the workflow notifier, and exit."""
+    log(f"ERROR: {reason}")
+    for hint in hints:
+        log(f"  {hint}")
+    try:
+        with open(FAILURE_REASON_FILE, "w") as f:
+            f.write(reason + "\n")
+    except OSError:
+        pass
+    sys.exit(1)
+
+
+def check_cookie_expiry(storage_state):
+    """Log expiry of session cookies and flag ones that are expiring soon."""
+    now = datetime.now().timestamp()
+    soonest = None
+    for c in storage_state.get("cookies", []):
+        if c.get("name") in ("sessionid", "sessionid_ss", "sid_guard") and c.get("expires", -1) > 0:
+            days_left = (c["expires"] - now) / 86400
+            log(f"Cookie '{c['name']}' expires in {days_left:.0f} days")
+            if soonest is None or days_left < soonest:
+                soonest = days_left
+    if soonest is None:
+        return
+    if soonest < 14:
+        warning = (
+            f"Session cookies expire in {soonest:.0f} days. "
+            "Re-run login.py and update the cookies secret before then."
+        )
+        log(f"WARNING: {warning}")
+        try:
+            with open(COOKIE_WARNING_FILE, "w") as f:
+                f.write(warning + "\n")
+        except OSError:
+            pass
+
+
 def load_cookies():
     """Load cookies from base64 env var (GitHub Actions) or local file."""
     cookies_b64 = os.environ.get("TIKTOK_COOKIES_B64")
@@ -76,6 +118,19 @@ def wait_for_conversations_to_load(page):
         log(f"Still loading... (attempt {attempt + 1})")
     log("WARNING: Conversations may not have fully loaded")
     return False
+
+
+def looks_logged_out(page):
+    """Detect a logged-out state even when TikTok doesn't redirect to /login."""
+    if "/login" in page.url:
+        return True
+    try:
+        login_button = page.locator(
+            '[data-e2e="top-login-button"], button:has-text("Log in")'
+        ).first
+        return login_button.is_visible(timeout=1000)
+    except Exception:
+        return False
 
 
 def find_in_conversation_list(page, display_name):
@@ -182,10 +237,13 @@ def search_for_user(page, username):
 
 def main():
     if not RECIPIENT:
-        log("ERROR: TIKTOK_RECIPIENT is not set.")
-        log("  Set it as a GitHub Actions secret or environment variable.")
-        log("  Format: 'DisplayName' or 'DisplayName|@username'")
-        sys.exit(1)
+        fail(
+            "TIKTOK_RECIPIENT is not set.",
+            hints=(
+                "Set it as a GitHub Actions secret or environment variable.",
+                "Format: 'DisplayName' or 'DisplayName|@username'",
+            ),
+        )
 
     # Parse recipient - can be "DisplayName" or "DisplayName|@username"
     if "|" in RECIPIENT:
@@ -206,6 +264,7 @@ def main():
         log(f"  Username: {username}")
 
     storage_state = load_cookies()
+    check_cookie_expiry(storage_state)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -228,14 +287,29 @@ def main():
         page.wait_for_timeout(3000)
 
         # Check if logged in
-        if "/login" in page.url:
+        if looks_logged_out(page):
             save_debug_screenshot(page, "login-redirect")
-            log("ERROR: Session expired. Re-run login.py and update TIKTOK_COOKIES secret.")
             browser.close()
-            sys.exit(1)
+            fail("Session expired (logged out). Re-run login.py and update the cookies secret.")
 
-        wait_for_conversations_to_load(page)
+        loaded = wait_for_conversations_to_load(page)
+        if not loaded:
+            log("Conversation list did not load — reloading page once...")
+            page.reload(wait_until="networkidle")
+            page.wait_for_timeout(3000)
+            loaded = wait_for_conversations_to_load(page)
         save_debug_screenshot(page, "messages-page")
+
+        # A logged-in page whose conversation list never loads means the
+        # session is dead for the DM service, even though the page shell
+        # still renders. Treat it as an expired session, not a bad name.
+        if not loaded:
+            save_debug_screenshot(page, "conversations-never-loaded")
+            browser.close()
+            fail(
+                "Conversation list never loaded — session is likely expired or "
+                "revoked for DMs. Re-run login.py and update the cookies secret.",
+            )
 
         # Strategy 1: Try to find by display name in conversation list
         found = False
@@ -254,10 +328,11 @@ def main():
                 log(f"Page text preview (first 1000 chars):\n{body_text[:1000]}")
             except Exception:
                 pass
-            log(f"ERROR: Could not find conversation.")
-            log("  Make sure the display name or username is correct.")
             browser.close()
-            sys.exit(1)
+            fail(
+                "Conversation loaded but recipient was not found.",
+                hints=("Make sure the display name or username is correct.",),
+            )
 
         save_debug_screenshot(page, "conversation-opened")
 

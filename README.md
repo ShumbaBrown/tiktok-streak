@@ -58,9 +58,19 @@ To send messages from multiple accounts (e.g., you and your partner both sending
 
 See `.github/workflows/streak-lauren.yml` for an example.
 
+## When Something Breaks
+
+If a run fails (or your session is within 14 days of expiring), the workflow automatically opens a GitHub issue on this repo — which sends you an email — with the failure reason and a link to the run. Debug screenshots are attached to each run as artifacts.
+
+Failure signatures to know:
+
+- **"Session expired (logged out)"** — the cookies are dead; refresh them (below).
+- **"Conversation list never loaded"** — the page still shows you as logged in, but TikTok's DM service is rejecting the session. This is also an expired/revoked session; refresh the cookies. (This is what a months-old session looks like when it dies.)
+- **"Recipient was not found"** — the session is fine; check the `TIKTOK_RECIPIENT` secret value.
+
 ## Refreshing Your Session
 
-TikTok sessions expire periodically (usually weeks to months). If the workflow starts failing with "session expired":
+TikTok sessions expire periodically (usually weeks to months). If the workflow starts failing with a session-expired error:
 
 1. Run `python login.py` again on your computer
 2. Log into TikTok in the browser that opens

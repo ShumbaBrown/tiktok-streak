@@ -9,6 +9,9 @@ on:
 jobs:
   send-message:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +28,7 @@ jobs:
           playwright install-deps chromium
 
       - name: Send TikTok message
+        id: send
         env:
           TIKTOK_COOKIES_B64: ${{ secrets.LAUREN_TIKTOK_COOKIES }}
           TIKTOK_RECIPIENT: ${{ secrets.LAUREN_TIKTOK_RECIPIENT }}
@@ -39,3 +43,38 @@ jobs:
           path: /tmp/*.png
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Notify via GitHub issue on failure or expiring session
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notify() {
+            title="$1"; body="$2"
+            existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number' || true)
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          }
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ "${{ steps.send.outcome }}" = "failure" ]; then
+            REASON=$(cat /tmp/streak-failure-reason.txt 2>/dev/null || echo "Unknown — see run logs.")
+            notify "${{ github.workflow }}: daily message FAILED" \
+              "The streak message was **not sent** today.
+
+          **Reason:** $REASON
+
+          [Run logs]($RUN_URL) — debug screenshots are attached as artifacts on the run.
+
+          If the session expired: re-run \`python login.py\` on the affected account, then update the cookies secret."
+          elif [ -f /tmp/streak-cookie-warning.txt ]; then
+            notify "${{ github.workflow }}: session expiring soon" \
+              "$(cat /tmp/streak-cookie-warning.txt)
+
+          Re-run \`python login.py\` on the affected account and update the cookies secret to avoid a broken streak.
+
+          [Run logs]($RUN_URL)"
+          fi
