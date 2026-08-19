@@ -57,6 +57,11 @@ def check_cookie_expiry(storage_state):
                 soonest = days_left
     if soonest is None:
         return
+    if soonest < 0:
+        fail(
+            f"Session cookie expired {-soonest:.0f} days ago. "
+            "Re-run login.py on this account and update the cookies secret."
+        )
     if soonest < 14:
         warning = (
             f"Session cookies expire in {soonest:.0f} days. "
